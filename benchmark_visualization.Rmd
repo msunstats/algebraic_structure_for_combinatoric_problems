@@ -1,0 +1,1177 @@
+---
+title: "Quotient Space Learning Benchmark Results"
+subtitle: "Comparative Analysis of Optimization Methods for Patient Subgroup Discovery"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+    number_sections: true
+    theme: flatly
+    highlight: tango
+    code_folding: hide
+    fig_width: 12
+    fig_height: 8
+  pdf_document:
+    toc: true
+    number_sections: true
+    fig_width: 10
+    fig_height: 6
+params: 
+  useRealData: FALSE
+  useNumericMetrics: TRUE
+knit: |
+  (function(inputFile, encoding) { 
+    # Determine output filename based on parameters
+    yaml_params <- rmarkdown::yaml_front_matter(inputFile)$params
+    data_type <- ifelse(yaml_params$useRealData, "real", "dummy")
+    numeric_type <- ifelse(yaml_params$useNumericMetrics, "with_numeric", "no_numeric")
+    output_subdir <- paste0(data_type, "_", numeric_type, "_data")
+    
+    # Create reports subdirectory
+    reports_subdir <- here::here("report")
+    if (!dir.exists(reports_subdir)) {
+      dir.create(reports_subdir, recursive = TRUE)
+    }
+    
+    # Generate output filename in the subdirectory
+    pSubTitle <- file.path(reports_subdir, paste0('benchmark_visualisation_', output_subdir, '.html'))
+
+    rmarkdown::render( 
+      input = inputFile, 
+      encoding = encoding, 
+      output_file = pSubTitle
+    )
+  })
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, 
+  message = FALSE, 
+  warning = FALSE,
+  fig.width = 9,
+  fig.height = 6,
+  dpi = 300
+)
+
+# Load required libraries
+suppressMessages(library(here))
+suppressMessages(library(ggplot2))
+suppressMessages(library(dplyr))
+suppressMessages(library(tidyr))
+suppressMessages(library(plotly))
+suppressMessages(library(knitr))
+suppressMessages(library(kableExtra))
+suppressMessages(library(gridExtra))
+suppressMessages(library(htmlwidgets))
+
+# Create directories and setup saving functions
+base_plots_dir <- here::here("plots")
+base_tables_dir <- here::here("tables")
+base_reports_dir <- here::here("report")
+
+# Will be set after config chunk runs
+plots_dir <- NULL
+tables_dir <- NULL
+reports_dir <- NULL
+
+# Function to save plots
+save_plot <- function(plot_obj, filename, width = 8, height = 6, data_suffix = NULL) {
+  if (is.null(data_suffix)) {
+    data_suffix <- ifelse(exists("output_subdir"), output_subdir, "dummy_no_numeric_data")
+  }
+  full_filename <- paste0(filename, ".png")
+  filepath <- file.path(plots_dir, full_filename)
+  
+  if ("plotly" %in% class(plot_obj)) {
+    # For plotly objects, save as HTML and also try to save as static image
+    html_path <- file.path(plots_dir, paste0(filename, ".html"))
+    htmlwidgets::saveWidget(plot_obj, html_path, selfcontained = TRUE)
+    cat("Saved interactive plot:", html_path, "\n")
+  } else {
+    # For ggplot objects
+    ggsave(filepath, plot_obj, width = width, height = height, dpi = 300)
+    cat("Saved plot:", filepath, "\n")
+  }
+}
+
+# Function to save tables
+save_table <- function(table_data, filename, format = "csv") {
+  if (format == "csv") {
+    filepath <- file.path(tables_dir, paste0(filename, ".csv"))
+    write.csv(table_data, filepath, row.names = FALSE)
+  } else if (format == "rds") {
+    filepath <- file.path(tables_dir, paste0(filename, ".rds"))
+    saveRDS(table_data, filepath)
+  }
+  cat("Saved table:", filepath, "\n")
+  return(filepath)
+}
+```
+
+# Configuration
+
+```{r config}
+# Set this to match the data type you want to visualize
+useRealData <- params$useRealData  # Set to TRUE for real data results, FALSE for dummy data results
+useNumericMetrics <- params$useNumericMetrics  # Set to match numeric_metrics setting in run_methods.R
+numeric_flag <- ifelse(useNumericMetrics, "with_numeric", "no_numeric")
+data_type_suffix <- paste0(ifelse(useRealData, "real", "dummy"), "_", numeric_flag, "_data")
+output_subdir <- data_type_suffix  # This matches the subdirectory structure from run_methods.R
+
+# Create subdirectories for organized output
+plots_dir <- file.path(base_plots_dir, output_subdir)
+tables_dir <- file.path(base_tables_dir, output_subdir)
+reports_dir <- file.path(base_reports_dir)
+
+# Create directories if they don't exist
+for (dir_path in c(plots_dir, tables_dir, reports_dir)) {
+  if (!dir.exists(dir_path)) {
+    dir.create(dir_path, recursive = TRUE)
+  }
+}
+
+cat("Analysis Configuration:",
+    paste("Data Type:", ifelse(useRealData, "Real Data", "Dummy Data")),
+    paste("Numeric Metrics:", ifelse(useNumericMetrics, "Enabled", "Disabled")),
+    paste("Output Directory:", paste0("output/", output_subdir, "/")),
+    paste("Plots Directory:", plots_dir),
+    paste("Tables Directory:", tables_dir),
+    paste("Reports Directory:", reports_dir),
+    sep = "\n")
+```
+
+# Load Results
+
+```{r load-results}
+# Check if saved results exist
+fitness_file <- here::here(paste0('output/', output_subdir, '/all_comparison_fitness_data.rds'))
+times_file <- here::here(paste0('output/', output_subdir, '/all_comparison_times_data.rds'))
+plot_file <- here::here(paste0('output/', output_subdir, '/all_comparison_data_for_3d_plot.rds'))
+
+if (!file.exists(fitness_file)) {
+  stop(paste0("Results not found for ", ifelse(useRealData, "real data", "dummy data"), 
+              ".\nExpected file: ", fitness_file,
+              "\nPlease run run_methods.R first with useRealData = ", useRealData, " to generate the results."))
+}
+
+all_comparison_fitness_data = readRDS(fitness_file)
+all_comparison_times_data = readRDS(times_file)
+all_comparison_data_for_3d_plot = readRDS(plot_file)
+
+# Transform method names to avoid confusion 
+if ("Method" %in% colnames(all_comparison_fitness_data)) {
+  all_comparison_fitness_data$Method <- gsub("Genetic Algorithm", "GA (No Quotient Space)", all_comparison_fitness_data$Method)
+  all_comparison_fitness_data$Method <- gsub("Orbit-Aware GA", "GA (With Quotient Space)", all_comparison_fitness_data$Method)
+  all_comparison_fitness_data$Method <- gsub("Bayesian Optimization \\(No Orbits\\)", "BO (No Quotient Space)", all_comparison_fitness_data$Method)
+  all_comparison_fitness_data$Method <- gsub("Bayesian Optimization \\(With Orbits\\)", "BO (With Quotient Space)", all_comparison_fitness_data$Method)
+}
+if ("Method" %in% colnames(all_comparison_times_data)) {
+  all_comparison_times_data$Method <- gsub("Genetic Algorithm", "GA (No Quotient Space)", all_comparison_times_data$Method)
+  all_comparison_times_data$Method <- gsub("Orbit-Aware GA", "GA (With Quotient Space)", all_comparison_times_data$Method)
+  all_comparison_times_data$Method <- gsub("Bayesian Optimization \\(No Orbits\\)", "BO (No Quotient Space)", all_comparison_times_data$Method)
+  all_comparison_times_data$Method <- gsub("Bayesian Optimization \\(With Orbits\\)", "BO (With Quotient Space)", all_comparison_times_data$Method)
+}
+if ("Method" %in% colnames(all_comparison_data_for_3d_plot)) {
+  all_comparison_data_for_3d_plot$Method <- gsub("Genetic Algorithm", "GA (No Quotient Space)", all_comparison_data_for_3d_plot$Method)
+  all_comparison_data_for_3d_plot$Method <- gsub("Orbit-Aware GA", "GA (With Quotient Space)", all_comparison_data_for_3d_plot$Method)
+  all_comparison_data_for_3d_plot$Method <- gsub("Bayesian Optimization \\(No Orbits\\)", "BO (No Quotient Space)", all_comparison_data_for_3d_plot$Method)
+  all_comparison_data_for_3d_plot$Method <- gsub("Bayesian Optimization \\(With Orbits\\)", "BO (With Quotient Space)", all_comparison_data_for_3d_plot$Method)
+}
+
+# Load the saved datasets
+cat("Loading analysis results for", ifelse(useRealData, "real data", "dummy data"), "...",
+    "Successfully loaded:",
+    sprintf("  - Fitness data: %d rows, %d columns", nrow(all_comparison_fitness_data), ncol(all_comparison_fitness_data)),
+    sprintf("  - Times data: %d rows, %d columns", nrow(all_comparison_times_data), ncol(all_comparison_times_data)),
+    sprintf("  - 3D plot data: %d rows, %d columns", nrow(all_comparison_data_for_3d_plot), ncol(all_comparison_data_for_3d_plot)),
+    sep = "\n")
+
+# Debug: Check column names and data structure
+cat("\nData validation:\n")
+cat("Fitness data columns:", paste(colnames(all_comparison_fitness_data), collapse = ", "), "\n")
+cat("3D plot data columns:", paste(colnames(all_comparison_data_for_3d_plot), collapse = ", "), "\n")
+
+# Check if Method column exists and show unique values
+if ("Method" %in% colnames(all_comparison_data_for_3d_plot)) {
+  cat("Unique methods in 3D data:", paste(unique(all_comparison_data_for_3d_plot$Method), collapse = ", "), "\n")
+} else {
+  cat("WARNING: Method column not found in 3D plot data!\n")
+}
+
+# Load exhaustive search results (if available)
+exhaustive_file <- here::here(paste0('output/', output_subdir, '/exhaustive_search_global_optima.rds'))
+exhaustive_data_available <- FALSE
+exhaustive_global_optima <- NULL
+
+if (file.exists(exhaustive_file)) {
+  exhaustive_global_optima <- readRDS(exhaustive_file)
+  
+  # Check if we have valid exhaustive search results
+  valid_exhaustive_results <- sum(!is.na(exhaustive_global_optima$TrueGlobalOptimum))
+  
+  if (valid_exhaustive_results > 0) {
+    exhaustive_data_available <- TRUE
+    cat(sprintf("  - Exhaustive search results: %d rows (%d with valid optima)\n", 
+                nrow(exhaustive_global_optima), valid_exhaustive_results))
+    
+    # Create enhanced comparison data with optimality gaps
+    all_comparison_fitness_data_with_gaps <- all_comparison_fitness_data %>%
+      left_join(exhaustive_global_optima %>% select(MinSubgroupSize, TrueGlobalOptimum), 
+               by = "MinSubgroupSize") %>%
+      mutate(
+        OptimalityGap = ifelse(!is.na(TrueGlobalOptimum), 
+                             (TrueGlobalOptimum - OptimalFitness) / TrueGlobalOptimum * 100, 
+                             NA),
+        PerformanceRatio = ifelse(!is.na(TrueGlobalOptimum), 
+                                OptimalFitness / TrueGlobalOptimum, 
+                                NA)
+      )
+    
+    cat("  - Enhanced fitness data with optimality gaps computed\n")
+  } else {
+    cat("  - Exhaustive search file found but no valid results available\n")
+  }
+} else {
+  cat("  - No exhaustive search results available (discrete optimization cases only)\n")
+}
+```
+
+# Performance Summary
+
+```{r performance-summary}
+# Generate basic performance summary without statistical analysis
+methods_summary <- all_comparison_data_for_3d_plot %>%
+  group_by(Method) %>%
+  summarise(
+    n_runs = n(),
+    # Fitness statistics
+    avg_fitness = round(mean(OptimalFitness, na.rm = TRUE), 4),
+    std_fitness = round(sd(OptimalFitness, na.rm = TRUE), 4),
+    min_fitness = round(min(OptimalFitness, na.rm = TRUE), 4),
+    max_fitness = round(max(OptimalFitness, na.rm = TRUE), 4),
+    # Time statistics
+    avg_time = round(mean(Time_Seconds, na.rm = TRUE), 2),
+    std_time = round(sd(Time_Seconds, na.rm = TRUE), 2),
+    .groups = 'drop'
+  ) %>%
+  arrange(desc(avg_fitness))
+
+# Create basic summary table
+kable(methods_summary, 
+      caption = paste("Performance Summary -", ifelse(useRealData, "Real Data", "Dummy Data")),
+      col.names = c("Method", "Runs", "Mean Fitness", "Std Fitness", "Min Fitness", "Max Fitness", "Mean Time", "Std Time")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = TRUE) %>%
+  row_spec(1, bold = TRUE, background = "#e8f5e8")  # Highlight best performer
+
+# Key insights
+best_method <- methods_summary$Method[1]
+fastest_method <- methods_summary$Method[which.min(methods_summary$avg_time)]
+most_consistent <- methods_summary$Method[which.min(methods_summary$std_fitness)]
+
+cat("\nKey Performance Insights:\n")
+cat("• Best Mean Fitness:", best_method, "(", methods_summary$avg_fitness[1], ")\n")
+cat("• Fastest Mean Time:", fastest_method, "(", min(methods_summary$avg_time), "seconds)\n")
+
+# Add optimality gap insights if available
+if (exhaustive_data_available && exists("all_comparison_fitness_data_with_gaps")) {
+  gap_insights <- all_comparison_fitness_data_with_gaps %>%
+    filter(!is.na(OptimalityGap)) %>%
+    group_by(Method) %>%
+    summarise(mean_gap = mean(OptimalityGap, na.rm = TRUE), .groups = 'drop') %>%
+    arrange(mean_gap)
+  
+  if (nrow(gap_insights) > 0) {
+    best_gap_method <- gap_insights$Method[1]
+    best_gap_value <- round(gap_insights$mean_gap[1], 2)
+    
+    cat("• Closest to Global Optimum:", best_gap_method, "(", best_gap_value, "% gap)\n")
+    cat("• Theoretical Validation: Exhaustive search available for discrete cases\n")
+  }
+}
+```
+
+# Exhaustive Search Validation
+
+```{r exhaustive-search-analysis, eval=exhaustive_data_available, results = 'asis'}
+if (exhaustive_data_available && exists("exhaustive_global_optima") && !is.null(exhaustive_global_optima)) {
+  cat("## Performance Relative to Theoretical Global Optimum\n\n")
+  cat("This analysis shows the performance of each optimization method relative to the theoretical global optimum (higher is better).\n\n")
+  # Calculate performance summary by method
+  valid_gap_data <- all_comparison_fitness_data_with_gaps %>%
+    filter(!is.na(OptimalityGap))
+  if (nrow(valid_gap_data) > 0) {
+    perf_summary <- valid_gap_data %>% 
+      group_by(Method) %>% 
+      mutate(flagGlobalOptimumReached = ifelse(abs(TrueGlobalOptimum - OptimalFitness) < 0.00001, TRUE, FALSE)) %>% 
+      summarise(meanPerformanceRatio = mean(PerformanceRatio), 
+                medianPerformanceRatio = median(PerformanceRatio), 
+                pctGlobalOptimumReached = sum(flagGlobalOptimumReached)/n(), 
+                .groups = 'drop') %>% 
+      mutate_if(is.numeric, round, digits = 4)
+    # Display performance table
+    print(kable(perf_summary, 
+          caption = "Performance Relative to Theoretical Global Optimum by Method (Higher is Better)",
+          col.names = c("Method", 'Mean Performance Ratio', 'Median Performance Ratio', '% of Global Optimum Reached')) %>%
+      kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = TRUE) %>%
+      row_spec(1, bold = TRUE, background = "#e8f5e8"))  # Highlight best performer
+  } else {
+    cat("No valid performance data available.\n")
+  }
+}
+```
+
+```{r optimality-gap-visualization, eval=exhaustive_data_available, fig.cap="Optimality gap distribution by method showing distance from theoretical global optimum"}
+if (exhaustive_data_available && exists("all_comparison_fitness_data_with_gaps") && !is.null(all_comparison_fitness_data_with_gaps)) {
+  valid_gap_data <- all_comparison_fitness_data_with_gaps %>%
+    filter(!is.na(OptimalityGap))
+  
+    # Performance ratio plot (alternative view)
+    valid_ratio_data <- all_comparison_fitness_data_with_gaps %>%
+      filter(!is.na(PerformanceRatio))
+    
+    if (nrow(valid_ratio_data) > 0) {
+      ratio_plot <- valid_ratio_data %>%
+        ggplot(aes(x = reorder(Method, PerformanceRatio, median), y = PerformanceRatio, fill = Method)) +
+        geom_boxplot(alpha = 0.7, outlier.shape = NA) +
+        geom_jitter(width = 0.2, alpha = 0.5, size = 0.8) +
+        geom_hline(yintercept = 1.0, linetype = "dashed", color = "red", alpha = 0.7) +
+        labs(
+          title = "Performance Ratio Distribution by Method",
+          subtitle = "Ratio of achieved fitness to theoretical global optimum (higher is better)",
+          x = "Method",
+          y = "Performance Ratio (Achieved/Optimal)",
+          caption = "Red line shows perfect performance (ratio = 1.0)"
+        ) +
+        theme_minimal() +
+        theme(
+          axis.text.x = element_text(angle = 45, hjust = 1),
+          legend.position = "none",
+          plot.title = element_text(size = 14, face = "bold"),
+          plot.subtitle = element_text(size = 12)
+        ) +
+        scale_fill_brewer(type = "qual", palette = "Set2") +
+        ylim(0, 1.05)
+      
+      print(ratio_plot)
+      save_plot(ratio_plot, "performance_ratio_distribution", width = 10, height = 6)
+      
+      # Global Optimum Achievement Analysis
+      cat("\n### Global Optimum Achievement Analysis\n")
+      
+      global_optimum_analysis <- valid_ratio_data %>% 
+        group_by(Method) %>% 
+        mutate(flagGlobalOptimumReached = ifelse(abs(TrueGlobalOptimum - OptimalFitness) < 0.00001, TRUE, FALSE)) %>% 
+        summarise(
+          meanPerformanceRatio = round(mean(PerformanceRatio), 4), 
+          medianPerformanceRatio = round(median(PerformanceRatio), 4), 
+          pctGlobalOptimumReached = round(sum(flagGlobalOptimumReached)/n() * 100, 2),
+          nCases = n(),
+          nOptimumReached = sum(flagGlobalOptimumReached),
+          .groups = 'drop'
+        ) %>%
+        arrange(desc(pctGlobalOptimumReached), desc(meanPerformanceRatio))
+      
+      # Display the analysis table
+      kable(global_optimum_analysis, 
+            caption = "Global Optimum Achievement Analysis by Method",
+            col.names = c("Method", "Mean Ratio", "Median Ratio", "% Global Optimum Reached", "Total Cases", "Optimum Reached (Count)")) %>%
+        kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = TRUE) %>%
+        row_spec(1, bold = TRUE, background = "#e8f5e8")  # Highlight best performer
+      
+      # Save the analysis results
+      save_table(global_optimum_analysis, "global_optimum_achievement_analysis", format = "csv")
+      
+      # Key insights
+      best_optimum_method <- global_optimum_analysis$Method[1]
+      best_optimum_pct <- global_optimum_analysis$pctGlobalOptimumReached[1]
+      total_optimum_reached <- sum(global_optimum_analysis$nOptimumReached)
+      total_cases <- sum(global_optimum_analysis$nCases)
+      overall_success_rate <- round(total_optimum_reached / total_cases * 100, 2)
+      
+      cat("\n**Key Global Optimum Insights:**\n")
+      cat("• Best success rate:", best_optimum_method, "(", best_optimum_pct, "% of cases)\n")
+      cat("• Overall success rate across all methods:", overall_success_rate, "%\n")
+      cat("• Total cases where global optimum was reached:", total_optimum_reached, "out of", total_cases, "\n")
+      
+      # Method-specific breakdown
+      cat("\n**Method Performance Breakdown:**\n")
+      for (i in 1:nrow(global_optimum_analysis)) {
+        row <- global_optimum_analysis[i, ]
+        cat(sprintf("• %s: %.2f%% success rate (%.4f mean ratio, %d/%d cases)\n", 
+                   row$Method, row$pctGlobalOptimumReached, row$meanPerformanceRatio, 
+                   row$nOptimumReached, row$nCases))
+      }
+  } else {
+    cat("No valid gap data available for visualization.\n")
+  }
+}
+```
+
+```{r gap-vs-subgroup-size, eval=exhaustive_data_available, fig.cap="Optimality gap trends across different minimum subgroup sizes"}
+if (exhaustive_data_available && exists("all_comparison_fitness_data_with_gaps") && !is.null(all_comparison_fitness_data_with_gaps)) {
+  valid_gap_data <- all_comparison_fitness_data_with_gaps %>%
+    filter(!is.na(OptimalityGap))
+  
+  if (nrow(valid_gap_data) > 0) {
+    # Plot performance relative to optimum vs minimum subgroup size
+    perf_trend_plot <- valid_gap_data %>%
+      ggplot(aes(x = MinSubgroupSize, y = 1 - OptimalityGap/100, color = Method)) +
+      geom_point(alpha = 0.2, size = 1.5) +
+      labs(
+        title = "Performance Relative to Optimum vs Minimum Subgroup Size",
+        subtitle = "How method performance varies with problem constraint difficulty",
+        x = "Minimum Subgroup Size",
+        y = "Performance Relative to Optimum",
+        color = "Method"
+      ) +
+      theme_minimal() +
+      theme(
+        legend.position = "bottom",
+        plot.title = element_text(size = 14, face = "bold"),
+        plot.subtitle = element_text(size = 12)
+      ) +
+      scale_color_brewer(type = "qual", palette = "Set2") +
+      guides(color = guide_legend(nrow = 2))
+    print(perf_trend_plot)
+    save_plot(perf_trend_plot, "performance_vs_subgroup_size", width = 10, height = 6)
+  } else {
+    cat("No valid gap data available for trend analysis.\n")
+  }
+}
+```
+
+# 3D Performance Visualization
+
+This interactive 3D plot shows the relationship between minimum subgroup size, optimal fitness, and execution time across all methods.
+
+```{r 3d-plot, fig.cap="Interactive 3D visualization of method performance across all evaluation criteria", fig.height=6}
+# Create the 3D scatter plot using Plotly
+p_3d_comparison <- plot_ly(
+  all_comparison_data_for_3d_plot %>% group_by(Method, ParamSet),
+  x = ~MinSubgroupSize,
+  y = ~OptimalFitness,
+  z = ~Time_Seconds,
+  color = ~Method,
+  colors = c("red", "blue", "purple", "green", "orange", "cyan"),
+  type = "scatter3d",
+  mode = "lines+markers",
+  marker = list(size = 3, opacity = 0.6),
+  line = list(width = 2, opacity = 0.3),
+  text = ~paste(
+    "Method:", Method,
+    "<br>Min Subgroup Size:", MinSubgroupSize,
+    "<br>Optimal Fitness:", round(OptimalFitness, 4),
+    "<br>Execution Time:", round(Time_Seconds, 2), "s"
+  ),
+  hoverinfo = "text"
+) %>%
+  layout(
+    title = paste("Performance Landscape -", ifelse(useRealData, "Real Data", "Dummy Data")),
+    scene = list(
+      xaxis = list(title = "Minimum Subgroup Size"),
+      yaxis = list(title = "Optimal Fitness Value"),
+      zaxis = list(title = "Execution Time (Seconds)")
+    ),
+    width = 800,
+    height = 500
+  )
+
+p_3d_comparison
+
+# Save the 3D plot
+save_plot(p_3d_comparison, "3d_performance_landscape")
+```
+
+
+# Method Comparisons
+
+## GA: No Quotient Space vs With Quotient Space
+
+```{r ga-comparison, fig.cap="Comparison between standard GA and quotient-space-aware GA approaches"}
+# GA vs Quotient-Space-Aware GA Analysis
+dfPlt_GA <- all_comparison_data_for_3d_plot %>% 
+  filter(Method %in% c('GA (No Quotient Space)', 'GA (With Quotient Space)'))
+
+if (nrow(dfPlt_GA) > 0) {
+  
+  # Performance comparison
+  p_ga_fitness <- ggplot(dfPlt_GA, aes(x = MinSubgroupSize, y = OptimalFitness, color = Method)) +
+    geom_jitter(alpha = 0.2, size = 1, height = 0.001) +
+    # geom_smooth(method = "loess", se = TRUE, alpha = 0.2) +
+    labs(title = "GA Performance Comparison",
+         x = "Minimum Subgroup Size",
+         y = "Optimal Fitness") +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+  
+  # Time comparison
+  p_ga_time <- ggplot(dfPlt_GA, aes(x = Method, y = Time_Seconds, fill = Method)) +
+    geom_boxplot(alpha = 0.7) +
+    # geom_jitter(width = 0.2, alpha = 0.5) +
+    labs(title = "Execution Time Distribution",
+         x = "Method",
+         y = "Execution Time (Seconds)") +
+    theme_minimal() +
+    theme(legend.position = "none")
+
+  # Save combined plot
+  combined_ga_plot <- grid.arrange(p_ga_fitness, p_ga_time, ncol = 2)
+  save_plot(combined_ga_plot, "ga_combined_comparison", 8, 6)
+  
+  # Enhanced summary statistics with statistical testing
+  ga_summary <- dfPlt_GA %>%
+    group_by(Method) %>%
+    summarise(
+      n_runs = n(),
+      avg_fitness = round(mean(OptimalFitness), 4),
+      std_fitness = round(sd(OptimalFitness), 4),
+      avg_time = round(mean(Time_Seconds), 2),
+      std_time = round(sd(Time_Seconds), 2),
+      .groups = 'drop'
+    )
+  
+  kable(ga_summary, caption = "GA Methods Comparison with Standard Deviations") %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+  
+  # Statistical comparison between GA methods
+  ga_no_quotient_space <- dfPlt_GA %>% filter(Method == 'GA (No Quotient Space)')
+  ga_with_quotient_space <- dfPlt_GA %>% filter(Method == 'GA (With Quotient Space)')
+  
+  if (nrow(ga_no_quotient_space) > 0 && nrow(ga_with_quotient_space) > 0) {
+    # Fitness comparison
+    fitness_test <- wilcox.test(ga_with_quotient_space$OptimalFitness, ga_no_quotient_space$OptimalFitness, paired = FALSE)
+    
+    # Time comparison  
+    time_test <- wilcox.test(ga_with_quotient_space$Time_Seconds, ga_no_quotient_space$Time_Seconds, paired = FALSE)
+    
+    # Effect sizes (Cohen's d)
+    fitness_pooled_sd <- sqrt((var(ga_with_quotient_space$OptimalFitness) + var(ga_no_quotient_space$OptimalFitness)) / 2)
+    fitness_cohens_d <- (mean(ga_with_quotient_space$OptimalFitness) - mean(ga_no_quotient_space$OptimalFitness)) / fitness_pooled_sd
+    
+    time_pooled_sd <- sqrt((var(ga_with_quotient_space$Time_Seconds) + var(ga_no_quotient_space$Time_Seconds)) / 2)
+    time_cohens_d <- (mean(ga_with_quotient_space$Time_Seconds) - mean(ga_no_quotient_space$Time_Seconds)) / time_pooled_sd
+    
+    cat("\n**Statistical Analysis - GA Quotient Space Learning Effect:**\n")
+    cat("• Fitness improvement: p =", format.pval(fitness_test$p.value), ", Cohen's d =", round(fitness_cohens_d, 3), "\n")
+    cat("• Time cost: p =", format.pval(time_test$p.value), ", Cohen's d =", round(time_cohens_d, 3), "\n")
+    
+    if (fitness_test$p.value < 0.05) {
+      cat("• **Significant fitness improvement** with quotient space learning\n")
+    }
+    if (time_test$p.value < 0.05) {
+      cat("• **Significant time cost** for quotient space learning\n")
+    }
+  }
+  
+} else {
+  cat("Note: GA comparison data not available in current results\n")
+}
+```
+
+## BO: No Quotient Space vs With Quotient Space
+
+```{r bo-comparison, fig.cap="Comparison between standard BO and quotient-space-enhanced BO approaches"}
+# BO comparison
+dfPlt_BO <- all_comparison_data_for_3d_plot %>% 
+  filter(Method %in% c('BO (No Quotient Space)', 'BO (With Quotient Space)'))
+
+if (nrow(dfPlt_BO) > 0) {
+  # Performance comparison
+  p_bo_fitness <- ggplot(dfPlt_BO, aes(x = MinSubgroupSize, y = OptimalFitness, color = Method)) +
+    geom_jitter(alpha = 0.2, size = 1, height = 0.01) +
+    # geom_smooth(method = "loess", se = TRUE, alpha = 0.2) +
+    labs(title = "BO Performance Comparison",
+         x = "Minimum Subgroup Size",
+         y = "Optimal Fitness") +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+  
+  # Time comparison
+  p_bo_time <- ggplot(dfPlt_BO, aes(x = Method, y = Time_Seconds, fill = Method)) +
+    geom_boxplot(alpha = 0.7) +
+    # geom_jitter(width = 0.2, alpha = 0.5) +
+    labs(title = "Execution Time Distribution",
+         x = "Method",
+         y = "Execution Time (Seconds)") +
+    theme_minimal() +
+    theme(legend.position = "none")
+  
+  # Save combined plot
+  combined_bo_plot <- grid.arrange(p_bo_fitness, p_bo_time, ncol = 2)
+  save_plot(combined_bo_plot, "bo_combined_comparison", 8, 6)
+  
+  # Enhanced summary statistics with statistical testing
+  bo_summary <- dfPlt_BO %>%
+    group_by(Method) %>%
+    summarise(
+      n_runs = n(),
+      avg_fitness = round(mean(OptimalFitness), 4),
+      std_fitness = round(sd(OptimalFitness), 4),
+      avg_time = round(mean(Time_Seconds), 2),
+      std_time = round(sd(Time_Seconds), 2),
+      .groups = 'drop'
+    )
+  
+  kable(bo_summary, caption = "BO Methods Comparison with Standard Deviations") %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+  
+  # Statistical comparison between BO methods
+  bo_no_quotient_space <- dfPlt_BO %>% filter(Method == 'BO (No Quotient Space)')
+  bo_with_quotient_space <- dfPlt_BO %>% filter(Method == 'BO (With Quotient Space)')
+  
+  if (nrow(bo_no_quotient_space) > 0 && nrow(bo_with_quotient_space) > 0) {
+    # Fitness comparison
+    fitness_test <- wilcox.test(bo_with_quotient_space$OptimalFitness, bo_no_quotient_space$OptimalFitness, paired = FALSE)
+    
+    # Time comparison  
+    time_test <- wilcox.test(bo_with_quotient_space$Time_Seconds, bo_no_quotient_space$Time_Seconds, paired = FALSE)
+    
+    # Effect sizes (Cohen's d)
+    fitness_pooled_sd <- sqrt((var(bo_with_quotient_space$OptimalFitness) + var(bo_no_quotient_space$OptimalFitness)) / 2)
+    fitness_cohens_d <- (mean(bo_with_quotient_space$OptimalFitness) - mean(bo_no_quotient_space$OptimalFitness)) / fitness_pooled_sd
+    
+    time_pooled_sd <- sqrt((var(bo_with_quotient_space$Time_Seconds) + var(bo_no_quotient_space$Time_Seconds)) / 2)
+    time_cohens_d <- (mean(bo_with_quotient_space$Time_Seconds) - mean(bo_no_quotient_space$Time_Seconds)) / time_pooled_sd
+    
+    cat("\n**Statistical Analysis - BO Quotient Space Learning Effect:**\n")
+    cat("• Fitness change: p =", format.pval(fitness_test$p.value), ", Cohen's d =", round(fitness_cohens_d, 3), "\n")
+    cat("• Time change: p =", format.pval(time_test$p.value), ", Cohen's d =", round(time_cohens_d, 3), "\n")
+    
+    if (abs(fitness_cohens_d) > 0.2) {
+      cat("• Effect size indicates", ifelse(fitness_cohens_d > 0, "improvement", "degradation"), "with quotient space learning\n")
+    } else {
+      cat("• Minimal effect of quotient space learning on BO performance\n")
+    }
+  }
+    
+} else {
+  cat("Note: Bayesian Optimization data not available in current results\n")
+}
+```
+
+# Overall Method Comparison
+
+## Performance vs Subgroup Size
+
+```{r overall-performance, fig.cap="Overall performance comparison across all methods"}
+# Define distinct colors for each method with maximum contrast
+method_colors <- c(
+  "GA (With Quotient Space)" = "#FF0000",      # Pure Red
+  "GA (No Quotient Space)" = "#000000",        # Black  
+  "BO (With Quotient Space)" = "#0000FF",      # Pure Blue
+  "BO (No Quotient Space)" = "#00FF00",        # Pure Green
+  "Greedy Algorithm" = "#00FFFF"       # Pure Cyan
+)
+
+p_methods_comparison <- ggplot(all_comparison_data_for_3d_plot, aes(x = MinSubgroupSize, y = OptimalFitness, color = Method)) +
+  geom_point(alpha = 0.5, size = 1) +
+  # geom_smooth(method = "loess", se = TRUE, alpha = 0.2) +
+  scale_color_manual(values = method_colors) +
+  labs(title = paste("Performance Comparison Across All Methods \n-", 
+                     ifelse(useRealData, "Real Data", "Dummy Data"),
+                     ifelse(useNumericMetrics, "with Numeric Variables", "without Numeric Variables")),
+       x = "Minimum Subgroup Size",
+       y = "Optimal Fitness") +
+  theme_minimal()
+  # theme(legend.position = "bottom")
+
+print(p_methods_comparison)
+
+# Save overall methods comparison plot
+save_plot(p_methods_comparison, "overall_methods_comparison", 8, 6)
+```
+
+## Execution Time Analysis
+
+```{r time-analysis, fig.cap="Execution time distribution and efficiency analysis"}
+# Time distribution by method
+p_time_comparison <- ggplot(all_comparison_data_for_3d_plot, aes(x = Method, y = Time_Seconds, fill = Method)) +
+  geom_boxplot(alpha = 0.7) +
+  # geom_jitter(width = 0.2, alpha = 0.4, size = 0.8) +
+  scale_fill_manual(values = method_colors) +
+  labs(title = paste("Execution Time Distribution by Method -", 
+                     ifelse(useRealData, "Real Data", "Dummy Data"),
+                     ifelse(useNumericMetrics, "with Numeric Variables", "without Numeric Variables")),
+       x = "Method",
+       y = "Execution Time (Seconds)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none") + 
+  coord_flip()
+  
+
+print(p_time_comparison)
+
+# Save time comparison plot
+save_plot(p_time_comparison, "execution_time_comparison", 9, 6)
+```
+
+# Summary and Insights
+
+```{r summary-insights, results = 'asis'}
+cat("Benchmark Analysis Summary\n")
+cat("=========================\n\n")
+
+cat("Dataset:", ifelse(useRealData, "Real Clinical Data", "Synthetic Data"), "\n")
+cat("Total Runs Analyzed:", nrow(all_comparison_data_for_3d_plot), "\n")
+cat("Methods Evaluated:", length(unique(all_comparison_data_for_3d_plot$Method)), "\n")
+cat("Subgroup Size Range:", paste(range(all_comparison_data_for_3d_plot$MinSubgroupSize), collapse = " - "), "\n")
+cat("Fitness Range:", paste(round(range(all_comparison_data_for_3d_plot$OptimalFitness), 4), collapse = " - "), "\n")
+cat("Time Range:", paste(round(range(all_comparison_data_for_3d_plot$Time_Seconds), 2), collapse = " - "), "seconds\n\n")
+
+cat("Key Findings:\n")
+cat("• Best performing method:", best_method, "\n")
+cat("• Most efficient method:", fastest_method, "\n")
+cat("• Most consistent method:", most_consistent, "\n\n")
+
+cat("Recommendations:\n")
+cat("• For maximum performance: Use", best_method, "\n")
+cat("• For speed-critical applications: Use", fastest_method, "\n")
+cat("• For consistent results: Use", most_consistent, "\n")
+```
+
+# Data Export
+
+```{r data-export}
+# Export summary data for further use
+summary_report <- list(
+  data_type = paste0(ifelse(useRealData, "real_data", "dummy_data"), "_", numeric_flag),
+  timestamp = Sys.time(),
+  methods_summary = methods_summary,
+  total_runs = nrow(all_comparison_data_for_3d_plot),
+  unique_methods = length(unique(all_comparison_data_for_3d_plot$Method)),
+  subgroup_size_range = range(all_comparison_data_for_3d_plot$MinSubgroupSize),
+  fitness_range = range(all_comparison_data_for_3d_plot$OptimalFitness),
+  time_range = range(all_comparison_data_for_3d_plot$Time_Seconds)
+)
+
+# Save summary report
+summary_file <- here::here(paste0('output/', output_subdir, '/benchmark_summary.rds'))
+saveRDS(summary_report, summary_file)
+```
+
+
+
+
+
+# Stability Analysis {.tabset .tabset-pills}
+
+This section analyzes the reproducibility and consistency of the optimization methods across multiple runs.
+
+```{r load-stability-data}
+# Check if stability raw results exist (only file we expect from run_methods.R)
+stability_data_file <- here::here(paste0('output/', output_subdir, '/stability_raw_results.rds'))
+
+if (!file.exists(stability_data_file)) {
+  cat("Missing stability data file:", stability_data_file)
+  cat("\nStability analysis will be skipped. Please run run_methods.R with runSim = TRUE to generate stability data.")
+  stability_data_available <- FALSE
+} else {
+  # Load raw stability data
+  all_stability_results <- readRDS(stability_data_file)
+  stability_data_available <- TRUE
+  
+  # Transform method names to avoid confusion
+  if ("Method" %in% colnames(all_stability_results)) {
+    all_stability_results$Method <- gsub("Genetic Algorithm", "GA (No Quotient Space)", all_stability_results$Method)
+    all_stability_results$Method <- gsub("Orbit-Aware GA", "GA (With Quotient Space)", all_stability_results$Method)
+    all_stability_results$Method <- gsub("Bayesian Optimization \\(No Orbits\\)", "BO (No Quotient Space)", all_stability_results$Method)
+    all_stability_results$Method <- gsub("Bayesian Optimization \\(With Orbits\\)", "BO (With Quotient Space)", all_stability_results$Method)
+  }
+  
+  cat("Successfully loaded raw stability data:",
+      sprintf("  - Raw results: %d rows", nrow(all_stability_results)),
+      sep = "\n")
+}
+```
+
+```{r stability-helper-functions, eval = stability_data_available}
+# Generate all analysis objects from raw data (if available)
+if (stability_data_available && nrow(all_stability_results) > 0) {
+  # Calculate stability metrics for both fitness and solutions
+  # Grouping by Method, ParamSetName, and MinSubgroupSize to account for multiple parameter sets
+  stability_summary <- all_stability_results %>%
+    group_by(Method, ParamSetName, MinSubgroupSize) %>%
+    summarise(
+      n_runs = n(),
+      # Fitness stability metrics
+      mean_fitness = round(mean(OptimalFitness, na.rm = TRUE), 4),
+      sd_fitness = round(sd(OptimalFitness, na.rm = TRUE), 4),
+      cv_fitness = round(sd(OptimalFitness, na.rm = TRUE) / mean(OptimalFitness, na.rm = TRUE) * 100, 2), # Coefficient of variation
+      min_fitness = round(min(OptimalFitness, na.rm = TRUE), 4),
+      max_fitness = round(max(OptimalFitness, na.rm = TRUE), 4),
+      range_fitness = round(max(OptimalFitness, na.rm = TRUE) - min(OptimalFitness, na.rm = TRUE), 4),
+      # Solution stability metrics
+      n_unique_solutions = n_distinct(OptimalRules),
+      most_common_solution_freq = max(table(OptimalRules)),
+      solution_consistency_pct = round(max(table(OptimalRules)) / n() * 100, 2),
+      .groups = 'drop'
+    ) %>%
+    arrange(Method, ParamSetName, MinSubgroupSize)
+  
+  # Create aggregated stability summary across all parameter sets per method
+  stability_summary_aggregated <- all_stability_results %>%
+    group_by(Method, MinSubgroupSize) %>%
+    summarise(
+      n_total_runs = n(),
+      n_param_sets = n_distinct(ParamSetName),
+      # Fitness stability metrics (across all parameter sets)
+      mean_fitness = round(mean(OptimalFitness, na.rm = TRUE), 4),
+      sd_fitness = round(sd(OptimalFitness, na.rm = TRUE), 4),
+      cv_fitness = round(sd(OptimalFitness, na.rm = TRUE) / mean(OptimalFitness, na.rm = TRUE) * 100, 2),
+      min_fitness = round(min(OptimalFitness, na.rm = TRUE), 4),
+      max_fitness = round(max(OptimalFitness, na.rm = TRUE), 4),
+      range_fitness = round(max(OptimalFitness, na.rm = TRUE) - min(OptimalFitness, na.rm = TRUE), 4),
+      # Solution stability metrics (across all parameter sets)
+      n_unique_solutions = n_distinct(OptimalRules),
+      most_common_solution_freq = max(table(OptimalRules)),
+      solution_consistency_pct = round(max(table(OptimalRules)) / n() * 100, 2),
+      .groups = 'drop'
+    ) %>%
+    arrange(Method, MinSubgroupSize)
+  
+  # Create detailed solution frequency analysis
+  solution_frequency_analysis <- all_stability_results %>%
+    group_by(Method, ParamSetName, MinSubgroupSize, OptimalRules) %>%
+    summarise(
+      frequency = n(),
+      mean_fitness_for_solution = round(mean(OptimalFitness), 4),
+      .groups = 'drop'
+    ) %>%
+    group_by(Method, ParamSetName, MinSubgroupSize) %>%
+    mutate(
+      frequency_pct = round(frequency / sum(frequency) * 100, 2),
+      rank = rank(-frequency, ties.method = "first")
+    ) %>%
+    arrange(Method, ParamSetName, MinSubgroupSize, rank) %>%
+    ungroup()
+  
+  # Create a summary of unique solutions per method-paramset-size combination
+  unique_solutions_summary <- solution_frequency_analysis %>%
+    group_by(Method, ParamSetName, MinSubgroupSize) %>%
+    summarise(
+      total_unique_solutions = n(),
+      most_frequent_solution = OptimalRules[1],
+      most_frequent_solution_pct = frequency_pct[1],
+      second_most_frequent_pct = ifelse(n() > 1, frequency_pct[2], 0),
+      .groups = 'drop'
+    )
+  
+  cat("Generated stability analysis objects from raw data:\n")
+  cat(sprintf("  - Stability summary (by parameter set): %d rows\n", nrow(stability_summary)))
+  cat(sprintf("  - Stability summary (aggregated): %d rows\n", nrow(stability_summary_aggregated)))
+  cat(sprintf("  - Solution frequency analysis: %d rows\n", nrow(solution_frequency_analysis)))
+  cat(sprintf("  - Unique solutions summary: %d rows\n", nrow(unique_solutions_summary)))
+} else {
+  cat("No stability data available for analysis.\n")
+}
+```
+
+## Stability Overview {.tabset}
+
+### Summary Statistics
+
+```{r stability-overview, eval = stability_data_available}
+if (exists("stability_summary_aggregated") && nrow(stability_summary_aggregated) > 0) {
+  kable(stability_summary_aggregated, 
+        caption = "Stability Summary - Aggregated Across All Parameter Sets",
+        digits = 4) %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>%
+    scroll_box(width = "100%", height = "400px")
+} else {
+  cat("No stability summary data available.")
+}
+```
+
+### Raw Results Sample
+
+```{r stability-raw-sample, eval = stability_data_available}
+if (exists("all_stability_results") && nrow(all_stability_results) > 0) {
+  # Show a sample of raw results
+  sample_results <- all_stability_results %>%
+    group_by(Method) %>%
+    slice_head(n = 3) %>%
+    ungroup()
+  
+  kable(sample_results, 
+        caption = "Sample of Stability Raw Results (First 3 rows per method)",
+        digits = 4) %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>%
+    scroll_box(width = "100%", height = "400px")
+} else {
+  cat("No stability raw results data available.")
+}
+```
+
+## Fitness Stability Visualizations {.tabset}
+
+### Fitness Distribution
+
+```{r stability-boxplot, eval = stability_data_available, fig.width=10, fig.height=6, results='asis'}
+if (exists("all_stability_results") && nrow(all_stability_results) > 0) {
+  # Get parameter set count for subtitle
+  n_param_sets_to_test <- all_stability_results %>% 
+    group_by(Method) %>% 
+    summarise(n_param_sets = n_distinct(ParamSetName)) %>% 
+    pull(n_param_sets) %>% 
+    max()
+  
+  n_stability_runs <- all_stability_results %>% 
+    group_by(Method, ParamSetName, MinSubgroupSize) %>% 
+    summarise(n_runs = n(), .groups = 'drop') %>% 
+    pull(n_runs) %>% 
+    max()
+  
+  p_stability_boxplot <- ggplot(all_stability_results, aes(x = factor(MinSubgroupSize), y = OptimalFitness, col = Method)) +
+    # geom_boxplot(alpha = 0.7, position = position_dodge(width = 0.8)) +
+    geom_jitter(position = position_jitterdodge(dodge.width = 0.8), alpha = 0.3, size = 0.8) +
+    labs(
+      title = paste("Method Stability Analysis -", ifelse(useRealData, "Real Data", "Dummy Data")),
+      subtitle = paste("Based on", n_stability_runs, "runs per parameter set,", n_param_sets_to_test, "parameter sets per method"),
+      x = "Minimum Subgroup Size",
+      y = "Optimal Fitness",
+      caption = "Each point represents one run; boxes show distribution across all parameter sets"
+    ) +
+    theme_minimal() +
+    theme(legend.position = "bottom") + 
+    facet_wrap(~Method, ncol = 3)
+  
+  print(p_stability_boxplot)
+  
+  # Save stability boxplot
+  save_plot(p_stability_boxplot, "stability_fitness_distribution", 11, 6)
+  
+  # Prepare data for testing
+  test_results <- data.frame()
+  
+  # Get unique MinSubgroupSize values
+  subgroup_sizes <- sort(unique(all_stability_results$MinSubgroupSize))
+  
+  # Test GA: With Quotient Space vs No Quotient Space for each MinSubgroupSize
+  for (size in subgroup_sizes) {
+    # GA comparison
+    ga_no_quotient_space <- all_stability_results %>% 
+      filter(Method == "GA (No Quotient Space)", MinSubgroupSize == size) %>% 
+      pull(OptimalFitness)
+    ga_with_quotient_space <- all_stability_results %>% 
+      filter(Method == "GA (With Quotient Space)", MinSubgroupSize == size) %>% 
+      pull(OptimalFitness)
+    
+    if (length(ga_no_quotient_space) > 0 && length(ga_with_quotient_space) > 0) {
+      ga_test <- wilcox.test(ga_with_quotient_space, ga_no_quotient_space, paired = FALSE)
+      ga_effect_size <- (median(ga_with_quotient_space, na.rm = TRUE) - median(ga_no_quotient_space, na.rm = TRUE)) / 
+                       mad(c(ga_with_quotient_space, ga_no_quotient_space), na.rm = TRUE)
+      
+      test_results <- rbind(test_results, data.frame(
+        Method_Comparison = "GA: With Quotient Space vs No Quotient Space",
+        MinSubgroupSize = size,
+        n_with_quotient_space = length(ga_with_quotient_space),
+        n_no_quotient_space = length(ga_no_quotient_space),
+        p_value = ga_test$p.value,
+        effect_size = ga_effect_size,
+        median_with_quotient_space = median(ga_with_quotient_space, na.rm = TRUE),
+        median_no_quotient_space = median(ga_no_quotient_space, na.rm = TRUE)
+      ))
+    }
+    
+    # BO comparison
+    bo_no_quotient_space <- all_stability_results %>% 
+      filter(Method == "BO (No Quotient Space)", MinSubgroupSize == size) %>% 
+      pull(OptimalFitness)
+    bo_with_quotient_space <- all_stability_results %>% 
+      filter(Method == "BO (With Quotient Space)", MinSubgroupSize == size) %>% 
+      pull(OptimalFitness)
+    
+    if (length(bo_no_quotient_space) > 0 && length(bo_with_quotient_space) > 0) {
+      bo_test <- wilcox.test(bo_with_quotient_space, bo_no_quotient_space, paired = FALSE)
+      bo_effect_size <- (median(bo_with_quotient_space, na.rm = TRUE) - median(bo_no_quotient_space, na.rm = TRUE)) / 
+                       mad(c(bo_with_quotient_space, bo_no_quotient_space), na.rm = TRUE)
+      
+      test_results <- rbind(test_results, data.frame(
+        Method_Comparison = "BO: With Quotient Space vs No Quotient Space",
+        MinSubgroupSize = size,
+        n_with_quotient_space = length(bo_with_quotient_space),
+        n_no_quotient_space = length(bo_no_quotient_space),
+        p_value = bo_test$p.value,
+        effect_size = bo_effect_size,
+        median_with_quotient_space = median(bo_with_quotient_space, na.rm = TRUE),
+        median_no_quotient_space = median(bo_no_quotient_space, na.rm = TRUE)
+      ))
+    }
+  }
+  
+  # Apply multiple testing correction (Holm's)
+  if (nrow(test_results) > 0) {
+    test_results$p_value_adjusted <- p.adjust(test_results$p_value, method = "holm")
+    
+    test_results_display = test_results %>% 
+      mutate(
+        p_value_formatted = format.pval(p_value, digits = 3),
+        p_value_adj_formatted = format.pval(p_value_adjusted, digits = 3),
+        median_difference = round(median_with_quotient_space - median_no_quotient_space, 4),
+        median_difference_pct = paste0(round(median_difference/median_no_quotient_space, 4)*100, '%'),
+        significance = ifelse(p_value_adjusted < 0.05, "***", 
+                             ifelse(p_value_adjusted < 0.1, "*", "ns"))) %>%
+      select(Method_Comparison, MinSubgroupSize, n_with_quotient_space, n_no_quotient_space, 
+             median_difference, median_difference_pct,
+             p_value_formatted, p_value_adj_formatted, significance)
+    
+    # Display results table
+    print(kable(test_results_display, 
+          caption = "Statistical Comparison of Quotient Space vs No-Quotient Space Methods by MinSubgroupSize",
+          col.names = c("Comparison", "Min Subgroup Size", "n (With Quotient Space)", "n (No Quotient Space)", 
+                       "Median Difference", "Median Difference Percentage", 
+                       "p-value", "p.adj (Holm)", "Sig.")) %>%
+      kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = TRUE) %>%
+      row_spec(which(test_results_display$significance == "***"), bold = TRUE, background = "#fff2cc") %>%
+      row_spec(which(test_results_display$significance == "*"), background = "#f0f0f0"))
+
+    # Save table data for LaTeX import
+    table_dir <- here::here("tables")
+    if (!dir.exists(table_dir)) {
+      dir.create(table_dir, recursive = TRUE)
+    }
+    
+    # Save as CSV and TSV using the organized table directory structure
+    save_table(test_results_display, "statistical_comparison_quotient_space_methods", "csv")
+    
+    # Save as tab-separated values for LaTeX \pgfplotstableread
+    tsv_filename <- "statistical_comparison_quotient_space_methods.tsv"
+    write.table(test_results_display, file.path(tables_dir, tsv_filename), 
+                sep = "\t", row.names = FALSE, quote = FALSE)
+    cat("Saved table:", file.path(tables_dir, tsv_filename), "\n")
+  } else {
+    cat("No valid comparisons could be performed (insufficient data).\n")
+  }
+} else {
+  cat("No stability data available for boxplot visualization.")
+}
+```
+
+
+
+### Coefficient of Variation
+
+```{r stability-cv, eval = stability_data_available, fig.width=10, fig.height=6}
+if (exists("stability_summary_aggregated") && nrow(stability_summary_aggregated) > 0) {
+  n_param_sets_to_test <- max(stability_summary_aggregated$n_param_sets, na.rm = TRUE)
+  
+  p_stability_cv <- ggplot(stability_summary_aggregated, aes(x = factor(MinSubgroupSize), y = cv_fitness, fill = Method)) +
+    geom_col(position = "dodge", alpha = 0.7) +
+    geom_text(aes(label = paste0(cv_fitness, "%")), 
+              position = position_dodge(width = 0.9), 
+              vjust = -0.3, size = 3) +
+    labs(
+      title = "Method Stability: Fitness Coefficient of Variation",
+      subtitle = paste("Aggregated across", n_param_sets_to_test, "parameter sets (lower = more stable)"),
+      x = "Minimum Subgroup Size",
+      y = "Coefficient of Variation (%)",
+      fill = "Method"
+    ) +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+  
+  print(p_stability_cv)
+  
+  # Save stability CV plot
+  save_plot(p_stability_cv, "stability_coefficient_variation", 11, 6)
+} else {
+  cat("No stability CV data available for visualization.")
+}
+```
+
+## Solution Consistency Visualizations {.tabset}
+
+
+### Unique Solutions Count
+
+```{r stability-unique, eval = stability_data_available, fig.width=10, fig.height=6}
+if (exists("stability_summary_aggregated") && nrow(stability_summary_aggregated) > 0) {
+  n_param_sets_to_test <- max(stability_summary_aggregated$n_param_sets, na.rm = TRUE)
+  n_stability_runs <- max(stability_summary_aggregated$n_total_runs / stability_summary_aggregated$n_param_sets, na.rm = TRUE)
+  
+  p_unique_solutions <- ggplot(stability_summary_aggregated, aes(x = factor(MinSubgroupSize), y = n_unique_solutions, fill = Method)) +
+    geom_col(position = "dodge", alpha = 0.7) +
+    geom_text(aes(label = n_unique_solutions), 
+              position = position_dodge(width = 0.9), 
+              vjust = -0.3, size = 3) +
+    labs(
+      title = "Method Stability: Number of Unique Solutions",
+      subtitle = paste("Across", n_param_sets_to_test, "parameter sets ×", n_stability_runs, "runs (lower = more consistent)"),
+      x = "Minimum Subgroup Size",
+      y = "Number of Unique Solutions",
+      fill = "Method"
+    ) +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+  
+  print(p_unique_solutions)
+  
+  # Save unique solutions plot
+  save_plot(p_unique_solutions, "stability_unique_solutions", 11, 6)
+} else {
+  cat("No unique solutions data available for visualization.")
+}
+```
+
+
+
+
+# Export methods summary as CSV
+
+```{r}
+# Save to output directory (for compatibility with run_methods.R)
+csv_file <- here::here(paste0('output/', output_subdir, '/benchmark_results.csv'))
+write.csv(methods_summary, csv_file, row.names = FALSE)
+
+# Also save to tables subdirectory for organized storage
+table_csv_file <- save_table(methods_summary, "methods_summary", "csv")
+table_rds_file <- save_table(methods_summary, "methods_summary", "rds")
+
+cat("Summary data exported to:\n")
+cat("•", summary_file, "\n")
+cat("•", csv_file, "\n")
+cat("•", table_csv_file, "\n")
+cat("•", table_rds_file, "\n")
+
+# Summary of saved plots
+cat("\nPlots saved to:", plots_dir, "\n")
+plot_files <- list.files(plots_dir, full.names = FALSE)
+if (length(plot_files) > 0) {
+  cat("Generated plot files:\n")
+  for (file in plot_files) {
+    cat("•", file, "\n")
+  }
+} else {
+  cat("No plot files found for current data type.\n")
+}
+
+# Summary of tables
+cat("\nTables saved to:", tables_dir, "\n")
+table_files <- list.files(tables_dir, full.names = FALSE)
+if (length(table_files) > 0) {
+  cat("Generated table files:\n")
+  for (file in table_files) {
+    cat("•", file, "\n")
+  }
+} else {
+  cat("No table files found.\n")
+}
+
+# Overall summary
+cat("\n" , rep('=', 60), "\n")
+cat("ORGANIZED OUTPUT SUMMARY FOR:", toupper(output_subdir), "\n")
+cat(rep('=', 60), "\n")
+cat("📊 Data files:", paste0("output/", output_subdir, "/"), "\n")
+cat("📈 Plot files:", plots_dir, "\n") 
+cat("📋 Table files:", tables_dir, "\n")
+cat("📄 Report file:", reports_dir, "\n")
+cat(rep('=', 60), "\n")
+```
+
+---
+
+*Report generated on `r Sys.time()` using R version `r R.version.string`*
