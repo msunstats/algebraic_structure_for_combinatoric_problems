@@ -14,8 +14,6 @@ A comprehensive R-based framework for discovering optimal patient subgroups usin
 - [File Descriptions](#file-descriptions)
 - [Output](#output)
 - [Visualization](#visualization)
-- [Advanced Usage](#advanced-usage)
-- [Citation](#citation)
 
 ---
 
