@@ -69,23 +69,23 @@ stability_params <- list(
 
 # Bayesian Optimization Parameter Ranges (these will be varied)
 # These parameters will be used for BOTH bo_method.R (no orbits) and bo_orbit_method.R (with orbits)
-bo_initial_samples_vals <- c(100) # Expanded range
-bo_iterations_vals <- c(100) # Expanded range
+bo_initial_samples_vals <- c(100, 300, 500) # Expanded range
+bo_iterations_vals <- c(100, 500, 1000) # Expanded range
 bo_acquisition_random_search_vals <- c(2000) # Expanded range
-bo_xi_vals <- c(0.01, 0.1) # Expanded range for exploration parameter
+bo_xi_vals <- c(0.01, 0.1, 1.0, 10.0) # Expanded range for exploration parameter
 
 # Genetic Algorithm Parameter Ranges (these will be varied)
-ga_pop_size_vals <- c(50, 60)
-ga_max_iter_vals <- c(20)
-ga_run_limit_vals <- c(10)
+ga_pop_size_vals <- c(50, 100)
+ga_max_iter_vals <- c(20, 50, 100, 150)
+ga_run_limit_vals <- c(10, 30, 60, 100)
 # Add crossover and mutation probabilities to GA params
 ga_pcrossover_vals <- c(0.8) # Fixed for now, could be varied
 ga_pmutation_vals <- c(0.1) # Fixed for now, could be varied
 
 # Orbit-Aware Genetic Algorithm Parameter Ranges (these will be varied)
-ga_orbit_pop_size_vals <- c(50, 60) # Expanded range
-ga_orbit_max_iter_vals <- c(20) # Expanded range
-ga_orbit_run_limit_vals <- c(10) # Expanded range
+ga_orbit_pop_size_vals <- c(50, 100) # Expanded range
+ga_orbit_max_iter_vals <- c(20, 50, 100, 150) # Expanded range
+ga_orbit_run_limit_vals <- c(10, 30, 60, 100) # Expanded range
 ga_orbit_pcrossover_vals <- c(0.8)
 ga_orbit_pmutation_vals <- c(0.1)
 
